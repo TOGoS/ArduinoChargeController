@@ -61,6 +61,17 @@ void loop() {
   digitalWrite(RELAY3, ((tick + 10) % 20) < 10 ? LOW : HIGH );
   digitalWrite(RELAY4, ((tick + 15) % 20) < 10 ? LOW : HIGH );
 
+  if( tick == 100 ) {
+    // Take a nap!
+    // For demonstrative purposes.
+    // This seems to work just fine without having to jump anything to RST
+    // on my WeMoS.
+    // Actually it doesn't.  I think I need to wire 'XPD' (a.k.a. D8) to RST.
+    // Which means I need to rewire my board again to not use D8 as RELAY1.
+    // Tomorrow.
+    ESP.deepSleep(30000000);
+  }
+  
   // Kill time until the next tick
   delay(100);
   ++tick;
