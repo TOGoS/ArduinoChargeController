@@ -1,14 +1,15 @@
 /*
- ESP8266 Blink by Simon Peter
- Blink the blue LED on the ESP-01 module
- This example code is in the public domain
- 
- The blue LED on the ESP-01 module is connected to GPIO1 
- (which is also the TXD pin; so we cannot use Serial.print() at the same time)
- 
- Note that this sketch uses LED_BUILTIN to find the pin with the internal LED
-*/
-
+ * ArduinoChargeController
+ * 
+ * Watch voltage on a battery, and when it gets too low,
+ * power on and connect to a wall power supply
+ * (one relay for the supply's 120V input, one for its 12-14V output)
+ * 
+ * Designed to run on an ESP8266 with one of the popular '4 Relay Modules'
+ * available circa 2017 for ~8$ each.
+ * The one I'm using seems to work just fine with ESP8266 voltage levels
+ * (3.3V)
+ */
 #define D0   16
 #define D1    5
 #define D2    4
