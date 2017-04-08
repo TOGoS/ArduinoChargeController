@@ -28,6 +28,12 @@
 #define RELAY3 D2
 #define RELAY4 D1
 
+// I'm using a 1M+5M = 6M voltage divider
+// The numbers I get seem to indicate 14.5 as a good thing to divide by to get volts
+// from the analog reading.
+#define A0_VALUE_TO_VOLTS (1.0/14.5)
+
+
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);     // Initialize the LED_BUILTIN pin as an output
   pinMode(RELAY1, OUTPUT); // Relay 4
@@ -54,11 +60,15 @@ void loop() {
   default:
     digitalWrite(LED_BUILTIN, HIGH);  // Turn the LED off by making the voltage HIGH
   }
-
+  
   int a0Val = analogRead(A0);
+  float a0Voltage = a0Val * A0_VALUE_TO_VOLTS;
   if( (tick % 10) == 0 ) {
-    Serial.print("analogRead(A0) = ");
-    Serial.println(a0Val);
+    Serial.print("a0/rawValue:");
+    Serial.print(a0Val);
+    Serial.print(" a0/voltage:");
+    Serial.print(a0Voltage);
+    Serial.print("\n");
   }
   
   // Flip the relaze!!
