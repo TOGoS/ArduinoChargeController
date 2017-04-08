@@ -11,6 +11,10 @@
  * (3.3V)
  */
 
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include "config.h"
+
 #define D0   16
 #define D1    5
 #define D2    4
@@ -33,6 +37,59 @@
 // from the analog reading.
 #define A0_VALUE_TO_VOLTS (1.0/14.5)
 
+#define messageBufferSize 128
+
+char hexDigit(int num) {
+  num = num & 0xF;
+  if( num < 10 ) return '0'+num;
+  if( num < 16 ) return 'A'+num;
+  return '?'; // Should be unpossible
+}
+
+byte macAddressBuffer[6];
+
+char messageBuffer[messageBufferSize];
+/** Used by the message_ building functions */
+int messageBufferOffset;
+
+void message_clear() {
+  messageBufferOffset = 0;
+}
+void message_appendString(const char *str) {
+  while( *str != 0 && messageBufferOffset < messageBufferSize-1 ) {
+    messageBuffer[messageBufferOffset] = *str;
+    ++str;
+    ++messageBufferOffset;
+  }
+}
+void message_appendMacAddressHex(byte *macAddress, const char *octetSeparator) {
+  for( int i=0; i<6; ++i ) {
+    if( i > 0 ) message_appendString(octetSeparator);
+    messageBuffer[messageBufferOffset++] = hexDigit(macAddress[i]>>4);
+    messageBuffer[messageBufferOffset++] = hexDigit(macAddress[i]);
+  }
+}
+void message_separate(const char *separator) {
+  if( messageBufferOffset == 0 ) return;
+  message_appendString(separator);
+}
+void message_appendFloat(float v) {
+  if( v < 0 ) {
+    messageBuffer[messageBufferOffset++] = '-'; // memory unsafety!!
+    v = -v;
+  }
+  int hundredths = (v * 100) - ((int)v) * 100;
+  int printed = snprintf(messageBuffer+messageBufferOffset, messageBufferSize-messageBufferOffset, "%d.%02d", (int)v, hundredths);
+  if( printed > 0 ) messageBufferOffset += printed;
+}
+void message_close() {
+  messageBuffer[messageBufferOffset++] = 0;
+}
+
+
+WiFiClient espClient;
+PubSubClient pubSubClient(espClient);
+
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);     // Initialize the LED_BUILTIN pin as an output
@@ -50,8 +107,82 @@ void setup() {
 }
 
 int tick = 0;
+int previousWiFiStatus = -1;
+
+void reportWiFiStatus(int wiFiStatus) {
+  Serial.print("# WiFi status: ");
+  switch( wiFiStatus ) {
+  case WL_CONNECTED:
+    Serial.println("WL_CONNECTED");
+    Serial.print("# IP address: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("# MAC address: ");
+    WiFi.macAddress(macAddressBuffer);
+    message_appendMacAddressHex(macAddressBuffer, ":");
+    Serial.println(messageBuffer);
+    break;
+  case WL_NO_SHIELD:
+    Serial.println("WL_NO_SHIELD");
+    break;
+  case WL_IDLE_STATUS:
+    Serial.println("WL_IDLE_STATUS");
+    break;
+  case WL_NO_SSID_AVAIL:
+    Serial.println("WL_NO_SSID_AVAIL");
+    break;
+  case WL_SCAN_COMPLETED:
+    Serial.println("WL_SCAN_COMPLETED");
+    break;
+  case WL_CONNECT_FAILED:
+    Serial.println("WL_CONNECT_FAILED");
+    break;
+  case WL_CONNECTION_LOST:
+    Serial.println("WL_CONNECTION_LOST");
+    break;
+  case WL_DISCONNECTED:
+    Serial.println("WL_DISCONNECTED");
+    break;
+  default:
+    Serial.println(wiFiStatus);
+  }
+}
+
+long lastWiFiConnectAttempt = -10000;
+
+int maintainWiFiConnection() {
+  long currentTime = millis();
+  int wiFiStatus = WiFi.status();
+  if( wiFiStatus != previousWiFiStatus ) {
+    reportWiFiStatus(wiFiStatus);
+    previousWiFiStatus = wiFiStatus;
+  }    
+  if( wiFiStatus != WL_CONNECTED && lastWiFiConnectAttempt < currentTime - 10000 ) {
+    Serial.print("# Attempting to connect to ");
+    Serial.print(WIFI_SSID);
+    Serial.print("...");
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    lastWiFiConnectAttempt = currentTime;
+  }
+  return wiFiStatus;
+}
+
+bool maintainMqttConnection() {
+  return false;
+  // TODO
+  if( !pubSubClient.connected() ) {
+    message_clear();
+    message_appendString("# Hi, I'm ");
+    const char *macAddressString = messageBuffer+messageBufferOffset;
+    message_appendMacAddressHex(macAddressBuffer, ":");
+    pubSubClient.connect(macAddressString);
+  }
+}
 
 void loop() {
+  int connected =
+    (maintainWiFiConnection() == WL_CONNECTED) && 
+    (maintainMqttConnection());
+  
   // Blink the LED *.*.*... so we can tell it's working
   switch( (tick % 8) ) {
   case 0: case 2: case 4:
@@ -76,7 +207,7 @@ void loop() {
   digitalWrite(RELAY2, (tick & 0x20) ? LOW : HIGH );
   digitalWrite(RELAY3, (tick & 0x40) ? LOW : HIGH );
   digitalWrite(RELAY4, (tick & 0x80) ? LOW : HIGH );
-
+  
   if( tick == 100 ) {
     // Take a nap!
     // For it to ever wake up requires that D0 be wired to RST.
