@@ -10,6 +10,7 @@
  * The one I'm using seems to work just fine with ESP8266 voltage levels
  * (3.3V)
  */
+
 #define D0   16
 #define D1    5
 #define D2    4
@@ -22,7 +23,7 @@
 #define D9    3
 #define D10   1
 
-#define RELAY1 D8
+#define RELAY1 D7
 #define RELAY2 D3
 #define RELAY3 D2
 #define RELAY4 D1
@@ -44,7 +45,6 @@ void setup() {
 
 int tick = 0;
 
-// the loop function runs over and over again forever
 void loop() {
   // Blink the LED *.*.*... so we can tell it's working
   switch( (tick % 8) ) {
@@ -55,21 +55,22 @@ void loop() {
     digitalWrite(LED_BUILTIN, HIGH);  // Turn the LED off by making the voltage HIGH
   }
 
+  int a0Val = analogRead(A0);
+  if( (tick % 10) == 0 ) {
+    Serial.print("analogRead(A0) = ");
+    Serial.println(a0Val);
+  }
+  
   // Flip the relaze!!
-  digitalWrite(RELAY1, ((tick +  0) % 20) < 10 ? LOW : HIGH );
-  digitalWrite(RELAY2, ((tick +  5) % 20) < 10 ? LOW : HIGH );
-  digitalWrite(RELAY3, ((tick + 10) % 20) < 10 ? LOW : HIGH );
-  digitalWrite(RELAY4, ((tick + 15) % 20) < 10 ? LOW : HIGH );
+  digitalWrite(RELAY1, (tick & 0x10) ? LOW : HIGH );
+  digitalWrite(RELAY2, (tick & 0x20) ? LOW : HIGH );
+  digitalWrite(RELAY3, (tick & 0x40) ? LOW : HIGH );
+  digitalWrite(RELAY4, (tick & 0x80) ? LOW : HIGH );
 
   if( tick == 100 ) {
     // Take a nap!
-    // For demonstrative purposes.
-    // This seems to work just fine without having to jump anything to RST
-    // on my WeMoS.
-    // Actually it doesn't.  I think I need to wire 'XPD' (a.k.a. D8) to RST.
-    // Which means I need to rewire my board again to not use D8 as RELAY1.
-    // Tomorrow.
-    ESP.deepSleep(30000000);
+    // For it to ever wake up requires that D0 be wired to RST.
+    //ESP.deepSleep(30000000);
   }
   
   // Kill time until the next tick
