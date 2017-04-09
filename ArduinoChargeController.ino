@@ -15,6 +15,10 @@
 #include <PubSubClient.h>
 #include "config.h"
 
+#ifndef MQTT_PORT
+#define MQTT_PORT 1883
+#endif
+
 #define D0   16
 #define D1    5
 #define D2    4
@@ -32,7 +36,12 @@
 #define RELAY3 D2
 #define RELAY4 D1
 
-#define messageBufferSize 128
+// Wall power to the regulator
+#define REGULATOR12_INPUT_RELAY RELAY1
+// 12-14V output from the regulator
+#define REGULATOR12_OUTPUT_RELAY RELAY2
+
+#define messageBufferSize 96
 
 char hexDigit(int num) {
   num = num & 0xF;
@@ -50,6 +59,11 @@ int messageBufferOffset;
 void message_clear() {
   messageBufferOffset = 0;
 }
+void message_appendChar(char c) {
+  if( messageBufferOffset < messageBufferSize-1 ) {
+    messageBuffer[messageBufferOffset++] = c;
+  }
+}
 void message_appendString(const char *str) {
   while( *str != 0 && messageBufferOffset < messageBufferSize-1 ) {
     messageBuffer[messageBufferOffset] = *str;
@@ -57,20 +71,33 @@ void message_appendString(const char *str) {
     ++messageBufferOffset;
   }
 }
-void message_appendMacAddressHex(byte *macAddress, const char *octetSeparator) {
-  for( int i=0; i<6; ++i ) {
-    if( i > 0 ) message_appendString(octetSeparator);
-    messageBuffer[messageBufferOffset++] = hexDigit(macAddress[i]>>4);
-    messageBuffer[messageBufferOffset++] = hexDigit(macAddress[i]);
-  }
-}
 void message_separate(const char *separator) {
   if( messageBufferOffset == 0 ) return;
   message_appendString(separator);
 }
+void message_appendLabel(const char *label) {
+  message_separate(" ");
+  message_appendString(label);
+  message_appendString(":");
+}
+void message_appendMacAddressHex(byte *macAddress, const char *octetSeparator) {
+  for( int i=0; i<6; ++i ) {
+    if( i > 0 ) message_appendString(octetSeparator);
+    message_appendChar(hexDigit(macAddress[i]>>4));
+    message_appendChar(hexDigit(macAddress[i]));
+  }
+}
+void message_appendLong(long v) {
+  if( v < 0 ) {
+    message_appendChar('+');
+    v = -v;
+  }
+  int printed = snprintf(messageBuffer+messageBufferOffset, messageBufferSize-messageBufferOffset, "%ld", v);
+  if( printed > 0 ) messageBufferOffset += printed;
+}
 void message_appendFloat(float v) {
   if( v < 0 ) {
-    messageBuffer[messageBufferOffset++] = '-'; // memory unsafety!!
+    message_appendChar('-');
     v = -v;
   }
   int hundredths = (v * 100) - ((int)v) * 100;
@@ -78,6 +105,9 @@ void message_appendFloat(float v) {
   if( printed > 0 ) messageBufferOffset += printed;
 }
 void message_close() {
+  if( messageBufferOffset > messageBufferSize-1 ) {
+    messageBufferOffset = messageBufferSize-1;
+  }
   messageBuffer[messageBufferOffset++] = 0;
 }
 
@@ -85,24 +115,7 @@ void message_close() {
 WiFiClient espClient;
 PubSubClient pubSubClient(espClient);
 
-
-void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);     // Initialize the LED_BUILTIN pin as an output
-  pinMode(RELAY1, OUTPUT); // Relay 4
-  pinMode(RELAY2, OUTPUT); // Relay 3
-  pinMode(RELAY3, OUTPUT); // Relay 2
-  pinMode(RELAY4, OUTPUT); // Relay 1
-  Serial.begin(115200);
-  Serial.println("# Hello from ArduinoChargeController!");
-  Serial.print("# LED_BUILTIN pin = "); Serial.println(LED_BUILTIN);
-  Serial.print("# RELAY1 pin = "); Serial.println(RELAY1);
-  Serial.print("# RELAY2 pin = "); Serial.println(RELAY2);
-  Serial.print("# RELAY3 pin = "); Serial.println(RELAY3);
-  Serial.print("# RELAY4 pin = "); Serial.println(RELAY4);
-}
-
-int tick = 0;
-int previousWiFiStatus = -1;
+long tickStartTime = -1;
 
 void reportWiFiStatus(int wiFiStatus) {
   Serial.print("# WiFi status: ");
@@ -113,7 +126,9 @@ void reportWiFiStatus(int wiFiStatus) {
     Serial.println(WiFi.localIP());
     Serial.print("# MAC address: ");
     WiFi.macAddress(macAddressBuffer);
+    message_clear();
     message_appendMacAddressHex(macAddressBuffer, ":");
+    message_close();
     Serial.println(messageBuffer);
     break;
   case WL_NO_SHIELD:
@@ -143,75 +158,223 @@ void reportWiFiStatus(int wiFiStatus) {
 }
 
 long lastWiFiConnectAttempt = -10000;
+int previousWiFiStatus = -1;
 
 int maintainWiFiConnection() {
-  long currentTime = millis();
   int wiFiStatus = WiFi.status();
   if( wiFiStatus != previousWiFiStatus ) {
     reportWiFiStatus(wiFiStatus);
     previousWiFiStatus = wiFiStatus;
   }    
-  if( wiFiStatus != WL_CONNECTED && lastWiFiConnectAttempt < currentTime - 10000 ) {
+  if( wiFiStatus != WL_CONNECTED && tickStartTime - lastWiFiConnectAttempt >= 10000 ) {
     Serial.print("# Attempting to connect to ");
     Serial.print(WIFI_SSID);
-    Serial.print("...");
+    Serial.println("...");
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    lastWiFiConnectAttempt = currentTime;
+    lastWiFiConnectAttempt = tickStartTime;
   }
   return wiFiStatus;
 }
 
+long lastMqttConnectAttempt = -10000;
+
 bool maintainMqttConnection() {
-  return false;
-  // TODO
-  if( !pubSubClient.connected() ) {
+  if( pubSubClient.connected() ) return true;
+  
+  if( tickStartTime - lastMqttConnectAttempt < 10000 ) return false;
+  
+  message_clear();
+  message_appendMacAddressHex(macAddressBuffer, ":");
+  message_close();
+  if( pubSubClient.connect(messageBuffer) ) {
+    Serial.print("# Connected to MQTT server: ");
+    Serial.print(MQTT_SERVER);
+    Serial.print(":");
+    Serial.println(MQTT_PORT);
     message_clear();
     message_appendString("# Hi, I'm ");
     const char *macAddressString = messageBuffer+messageBufferOffset;
     message_appendMacAddressHex(macAddressBuffer, ":");
-    pubSubClient.connect(macAddressString);
+    message_close();
+    pubSubClient.publish(MQTT_TOPIC, messageBuffer);
+    return true;
+  } else {
+    Serial.print("# Failed to connect to MQTT server: ");
+    Serial.print(MQTT_SERVER);
+    Serial.print(":");
+    Serial.println(MQTT_PORT);
+    return false;
   }
 }
 
+/*
+ * Battery charging:
+ * 
+ * Vmin = voltage below which we want to connect to wall charger -- maybe 11V
+ * Vmax = disconnect the wall charger if voltage goes above this -- maybe 14V
+ * maxDischargeRate = estimated maximum rate of discharge (Δvoltage/Δtime) -- let's say 1V/minute, which is 1/60000 V/millisecond
+ * maxSleepTime = maximum length of time we want to sleep -- maybe 5 minutes
+ * 
+ * If voltage is < Vmin, connect!  Start connection timer.
+ * If connection timer has expired, disconnect.
+ * If connected and voltage > Vmax, disconnect.
+ * If disconnected and voltage is > minV, and we've been awake for long enough to have reported to MQTT server, sleep for min(maxSleepTime, (V-Vmin)/maxDischargeRate)
+ */
+
+const long minRegulator12OutputMillis = 1*60*1000;
+const long minRegulator12InputMillis  = 1*90*1000;
+float maxDischargeRate = 1/60000.0;
+long maxSleepTime = 10*60*1000;
+
+long regulator12StartTime = -1;
+long lastMqttReportTime = -1;
+long lastSerialReportTime = -1;
+
+float vMin = 11;
+float vMax = 14;
+float prevV = -1;
+
+int prevA0Val = -1;
+
+bool regulator12InputOnPreviously = false, regulator12OutputOnPreviously = false;
+
+#ifdef WIFI_DEBUGGING
+void setup() {
+  Serial.begin(115200);
+  Serial.println("# Let's see if we can get stupid WiFi to work.");
+}
+
 void loop() {
-  int connected =
-    (maintainWiFiConnection() == WL_CONNECTED) && 
-    (maintainMqttConnection());
+  if( maintainWiFiConnection() == WL_CONNECTED ) {
+    maintainMqttConnection();
+  }
+  Serial.print(".");
+  delay(500);
+}
+#else
+void setup() {
+  pinMode(LED_BUILTIN, OUTPUT);     // Initialize the LED_BUILTIN pin as an output
+  pinMode(RELAY1, OUTPUT); // Relay 4
+  pinMode(RELAY2, OUTPUT); // Relay 3
+  pinMode(RELAY3, OUTPUT); // Relay 2
+  pinMode(RELAY4, OUTPUT); // Relay 1
+  Serial.begin(115200);
+  Serial.println("# Hello from ArduinoChargeController!");
+  Serial.print("# LED_BUILTIN pin = "); Serial.println(LED_BUILTIN);
+  Serial.print("# RELAY1 pin = "); Serial.println(RELAY1);
+  Serial.print("# RELAY2 pin = "); Serial.println(RELAY2);
+  Serial.print("# RELAY3 pin = "); Serial.println(RELAY3);
+  Serial.print("# RELAY4 pin = "); Serial.println(RELAY4);
+  pubSubClient.setServer(MQTT_SERVER, MQTT_PORT);
+  // Turn all relays to their default position
+  digitalWrite(RELAY1, HIGH);
+  digitalWrite(RELAY2, HIGH);
+  digitalWrite(RELAY3, HIGH);
+  digitalWrite(RELAY4, HIGH);
+}
+
+int tick = 0;
+int consecutiveBoringTicks = 0;
+
+void loop() {
+  tickStartTime = millis();
   
   // Blink the LED *.*.*... so we can tell it's working
-  switch( (tick % 8) ) {
+  switch( ((tickStartTime >> 8) % 8) ) {
   case 0: case 2: case 4:
     digitalWrite(LED_BUILTIN, LOW); // Turn the LED on (Note that LOW is the voltage level
     break;
   default:
     digitalWrite(LED_BUILTIN, HIGH);  // Turn the LED off by making the voltage HIGH
+    break;
   }
   
   int a0Val = analogRead(A0);
   // Formula designed to match data in voltage-readings.txt
-  float a0Voltage = (a0Val - 3) / 14.5;
-  if( (tick % 10) == 0 ) {
-    Serial.print("a0/rawValue:");
-    Serial.print(a0Val);
-    Serial.print(" a0/voltage:");
-    Serial.print(a0Voltage);
-    Serial.print("\n");
-  }
-  
-  // Flip the relaze!!
-  digitalWrite(RELAY1, (tick & 0x10) ? LOW : HIGH );
-  digitalWrite(RELAY2, (tick & 0x20) ? LOW : HIGH );
-  digitalWrite(RELAY3, (tick & 0x40) ? LOW : HIGH );
-  digitalWrite(RELAY4, (tick & 0x80) ? LOW : HIGH );
-  
-  if( tick == 100 ) {
-    // Take a nap!
-    // For it to ever wake up requires that D0 be wired to RST.
-    //ESP.deepSleep(30000000);
-  }
-  
-  // Kill time until the next tick
-  delay(100);
-  ++tick;
-}
+  float a0Voltage = (a0Val - 3) / 14.5f;
+  // TODO: Smooth signal when flipping between nearby values
 
+  bool regulator12InputOn, regulator12OutputOn;
+  if( a0Voltage < vMin ) {
+    // Defs need that power!
+    regulator12StartTime = tickStartTime;
+    regulator12InputOn = regulator12OutputOn = true;
+  } else {
+    regulator12InputOn  =                        (regulator12StartTime != -1) && (tickStartTime - regulator12StartTime < minRegulator12InputMillis );
+    regulator12OutputOn = (a0Voltage <= vMax) && (regulator12StartTime != -1) && (tickStartTime - regulator12StartTime < minRegulator12OutputMillis);
+  }
+
+  if( regulator12InputOn != regulator12InputOnPreviously ) {
+    digitalWrite(REGULATOR12_INPUT_RELAY , regulator12InputOn  ? LOW : HIGH);
+    regulator12InputOnPreviously = regulator12InputOn;
+  }
+  if( regulator12OutputOn != regulator12OutputOnPreviously ) {
+    digitalWrite(REGULATOR12_OUTPUT_RELAY, regulator12OutputOn ? LOW : HIGH);
+    regulator12OutputOnPreviously = regulator12OutputOn;
+  }
+
+  bool mqttConnected = (maintainWiFiConnection() == WL_CONNECTED) && maintainMqttConnection();
+
+  message_clear();
+  //message_appendLabel("a0RawValue");
+  //message_appendLong(a0Val);
+  message_appendLabel("batteryVoltage");
+  message_appendFloat(a0Voltage);
+  message_appendLabel("regPowered");
+  message_appendString(regulator12InputOn?"1":"0");
+  message_appendLabel("regConnected");
+  message_appendString(regulator12OutputOn?"1":"0");
+  message_appendLabel("time");
+  message_appendLong(tickStartTime);
+  //message_appendLabel("mqttConnected");
+  //message_appendString(mqttConnected?"1":"0");
+  message_appendLabel("nodeId");
+  message_appendMacAddressHex(macAddressBuffer, "-");
+  message_close();
+  
+  if( mqttConnected ) {
+    if( lastMqttReportTime == -1 || tickStartTime - lastMqttReportTime >= 1000 ) {
+      if( pubSubClient.publish(MQTT_TOPIC, messageBuffer) ) {
+        lastMqttReportTime = tickStartTime;
+      } else {
+        Serial.println("# Failed to publish message to MQTT server!");
+      }      
+      Serial.println(messageBuffer);
+      lastSerialReportTime = tickStartTime;
+    }
+  } else {
+    lastMqttReportTime = -1; // Force publish as soon as next connected
+  }
+  if( lastSerialReportTime == -1 || tickStartTime - lastSerialReportTime >= 1000 ) {
+    Serial.println(messageBuffer);
+    lastSerialReportTime = tickStartTime;
+  }
+
+  ++tick;
+  if( !regulator12OutputOn ) {
+    ++consecutiveBoringTicks;
+  } else {
+    consecutiveBoringTicks = 0;
+  }
+
+  if( consecutiveBoringTicks >= 100 ) {
+    long sleepTime = (a0Voltage - vMin)/maxDischargeRate;
+    if( sleepTime > maxSleepTime ) sleepTime = maxSleepTime;
+    if( sleepTime < 30000 ) goto nextTick;
+    
+    message_clear();
+    message_appendString("# Power seems okay; time for a ");
+    message_appendLong(sleepTime);
+    message_appendString("ms nap!");
+    message_close();
+    Serial.println(messageBuffer);
+    pubSubClient.publish(MQTT_TOPIC, messageBuffer);
+    delay(1000);
+    ESP.deepSleep(1000*(sleepTime-1000));
+  }
+
+nextTick:
+  // APPARENTLY WIFI WILL NEVER WORK IF YOU DON'T HAVE A DELAY SOMEWHERE
+  delay(100);
+}
+#endif
