@@ -32,11 +32,6 @@
 #define RELAY3 D2
 #define RELAY4 D1
 
-// I'm using a 1M+5M = 6M voltage divider
-// The numbers I get seem to indicate 14.5 as a good thing to divide by to get volts
-// from the analog reading.
-#define A0_VALUE_TO_VOLTS (1.0/14.5)
-
 #define messageBufferSize 128
 
 char hexDigit(int num) {
@@ -193,7 +188,8 @@ void loop() {
   }
   
   int a0Val = analogRead(A0);
-  float a0Voltage = a0Val * A0_VALUE_TO_VOLTS;
+  // Formula designed to match data in voltage-readings.txt
+  float a0Voltage = (a0Val - 3) / 14.5;
   if( (tick % 10) == 0 ) {
     Serial.print("a0/rawValue:");
     Serial.print(a0Val);
