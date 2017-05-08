@@ -276,7 +276,6 @@ int consecutiveBoringTicks = 0;
 
 struct LogState {
   int a0Val;
-  float a0Voltage;
   bool regulator12InputOn;
   bool regulator12OutputOn;
   bool mqttConnected;
@@ -285,7 +284,6 @@ struct LogState {
 
 struct LogState prevState = {
   a0Val: 0,
-  a0Voltage: 0,
   regulator12InputOn: false,
   regulator12OutputOn: false,
   mqttConnected: false,
@@ -298,6 +296,13 @@ void setRelayPinIfChanged(int pin, bool &current, bool requested) {
     digitalWrite(pin , requested ? LOW : HIGH);
     current = requested;
   }
+}
+
+int voltageToA0Val(float v) {
+  return 3 + (v * 14.5f);
+}
+float a0ValToVoltage(int a0Val) {
+  return (a0Val - 3) / 14.5f;
 }
 
 int absDiff(int a, int b) {
@@ -325,7 +330,7 @@ void loop() {
   #ifdef SIMULATE_A0VAL
   newState.a0Val = prevA0Val;
   if( regulator12InputOn && regulator12OutputOn ) {
-    newState.a0Val = 3 + (13 * 14.5f);
+    newState.a0Val = voltageToA0Val(13);
   } else {
     newState.a0Val = std::min(newState.a0Val, int(3 + (12 * 14.5f)));
     if( random(0,50) == 0 ) {
@@ -337,20 +342,18 @@ void loop() {
   #else
   newState.a0Val = analogRead(A0);
   #endif
-  
-  // Formula designed to match data in voltage-readings.txt
-  newState.a0Voltage = (newState.a0Val - 3) / 14.5f;
-  // TODO: Smooth signal when flipping between nearby values
 
+  float a0Voltage = a0ValToVoltage(newState.a0Val);
+  
   {
     bool regulator12InputShouldBeOn, regulator12OutputShouldBeOn;
-    if( newState.a0Voltage < vMin ) {
+    if( a0Voltage < vMin ) {
       // Defs need that power!
       regulator12StartTime = tickStartTime;
       regulator12InputShouldBeOn = regulator12OutputShouldBeOn = true;
     } else {
-      regulator12InputShouldBeOn  =                                 (regulator12StartTime != -1) && (tickStartTime - regulator12StartTime < minRegulator12InputMillis );
-      regulator12OutputShouldBeOn = (newState.a0Voltage <= vMax) && (regulator12StartTime != -1) && (tickStartTime - regulator12StartTime < minRegulator12OutputMillis);
+      regulator12InputShouldBeOn  =                        (regulator12StartTime != -1) && (tickStartTime - regulator12StartTime < minRegulator12InputMillis );
+      regulator12OutputShouldBeOn = (a0Voltage <= vMax) && (regulator12StartTime != -1) && (tickStartTime - regulator12StartTime < minRegulator12OutputMillis);
     }
     
     setRelayPinIfChanged( REGULATOR12_INPUT_RELAY , regulator12InputOn , regulator12InputShouldBeOn  );
@@ -367,7 +370,7 @@ void loop() {
   //message_appendLabel("a0RawValue");
   //message_appendLong(a0Val);
   message_appendLabel("batteryVoltage");
-  message_appendFloat(newState.a0Voltage);
+  message_appendFloat(a0Voltage);
   message_appendLabel("regPowered");
   message_appendString(newState.regulator12InputOn?"1":"0");
   message_appendLabel("regConnected");
@@ -430,7 +433,7 @@ void loop() {
   }
 
   if( consecutiveBoringTicks >= 100 ) {
-    long sleepTime = (newState.a0Voltage - vMin)/maxDischargeRate;
+    long sleepTime = (a0Voltage - vMin)/maxDischargeRate;
     if( sleepTime > maxSleepTime ) sleepTime = maxSleepTime;
     if( sleepTime < 30000 ) goto nextTick;
     
