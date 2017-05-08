@@ -390,8 +390,9 @@ void loop() {
       lastMqttReportTime == -1 ||
       // Attempt to reduce high-frequency, low-amplitude noise in output:
       // Don't log a difference of only one unit except after waiting a while
-      (valDiff >= 2) ||
-      ((valDiff >= 1) && (tickStartTime - lastMqttReportTime >= 10000)) ||
+      (valDiff >= 5                                               ) ||
+      (valDiff >= 2 && tickStartTime - lastMqttReportTime >=  1000) ||
+      (valDiff >= 1 && tickStartTime - lastMqttReportTime >= 10000) ||
       newState.regulator12InputOn != lastMqttLogState.regulator12InputOn ||
       newState.regulator12OutputOn != lastMqttLogState.regulator12OutputOn ||
       tickStartTime - lastMqttReportTime >= minMqttLogInterval
