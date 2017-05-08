@@ -221,8 +221,8 @@ bool maintainMqttConnection() {
  * If disconnected and voltage is > minV, and we've been awake for long enough to have reported to MQTT server, sleep for min(maxSleepTime, (V-Vmin)/maxDischargeRate)
  */
 
-const long minRegulator12OutputMillis = 1*60*1000;
-const long minRegulator12InputMillis  = 1*90*1000;
+const long minRegulator12OutputMillis = 10*60*1000;
+const long minRegulator12InputMillis  = 11*60*1000;
 float maxDischargeRate = 1/60000.0;
 long maxSleepTime = 10*60*1000;
 
