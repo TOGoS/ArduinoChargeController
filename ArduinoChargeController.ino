@@ -233,9 +233,6 @@ long lastSerialReportTime = -1;
 
 float vMin = 11;
 float vMax = 14;
-float prevV = -1;
-
-int prevA0Val = -1;
 
 bool regulator12InputOn = false, regulator12OutputOn = false;
 
