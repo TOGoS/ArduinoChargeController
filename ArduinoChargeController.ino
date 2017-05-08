@@ -279,10 +279,19 @@ struct LogState {
   float a0Voltage;
   bool regulator12InputOn;
   bool regulator12OutputOn;
+  bool mqttConnected;
   long timestamp;
 };
 
-struct LogState lastMqttLogState;
+struct LogState prevState = {
+  a0Val: 0,
+  a0Voltage: 0,
+  regulator12InputOn: false,
+  regulator12OutputOn: false,
+  mqttConnected: false,
+  timestamp: 0
+};
+struct LogState lastMqttLogState = prevState;
 
 void setRelayPinIfChanged(int pin, bool &current, bool requested) {
   if( current != requested ) {
@@ -292,14 +301,12 @@ void setRelayPinIfChanged(int pin, bool &current, bool requested) {
 }
 
 int absDiff(int a, int b) {
-  /*Serial.print("absDiff(");
-  Serial.print(a);
-  Serial.print(", ");
-  Serial.print(b);
-  Serial.print(") = ");
-  Serial.println(abs(a - b));*/
   return abs(a - b);
 }
+
+#ifdef SIMULATE_A0VAL
+int prevA0Val = 0;
+#endif
 
 void loop() {
   struct LogState newState;
@@ -315,7 +322,22 @@ void loop() {
     break;
   }
   
+  #ifdef SIMULATE_A0VAL
+  newState.a0Val = prevA0Val;
+  if( regulator12InputOn && regulator12OutputOn ) {
+    newState.a0Val = 3 + (13 * 14.5f);
+  } else {
+    newState.a0Val = std::min(newState.a0Val, int(3 + (12 * 14.5f)));
+    if( random(0,50) == 0 ) {
+      --newState.a0Val;
+    }
+  }
+  prevA0Val = newState.a0Val;
+  newState.a0Val += random(0,1); // simulated noise
+  #else
   newState.a0Val = analogRead(A0);
+  #endif
+  
   // Formula designed to match data in voltage-readings.txt
   newState.a0Voltage = (newState.a0Val - 3) / 14.5f;
   // TODO: Smooth signal when flipping between nearby values
@@ -334,9 +356,11 @@ void loop() {
     setRelayPinIfChanged( REGULATOR12_INPUT_RELAY , regulator12InputOn , regulator12InputShouldBeOn  );
     setRelayPinIfChanged( REGULATOR12_OUTPUT_RELAY, regulator12OutputOn, regulator12OutputShouldBeOn );
   }
-  
-  bool mqttConnected = (maintainWiFiConnection() == WL_CONNECTED) && maintainMqttConnection();
 
+  newState.regulator12InputOn  = regulator12InputOn;
+  newState.regulator12OutputOn = regulator12OutputOn;
+  
+  newState.mqttConnected = (maintainWiFiConnection() == WL_CONNECTED) && maintainMqttConnection();
   
   message_clear();
   // Don't put too much in the log mesasge or our MQTT client will reject it!
@@ -355,8 +379,9 @@ void loop() {
   message_appendLabel("nodeId");
   message_appendMacAddressHex(macAddressBuffer, "-");
   message_close();
-  
-  if( mqttConnected ) {
+
+  bool publishedToMqtt = false;
+  if( newState.mqttConnected ) {
     int valDiff = absDiff(newState.a0Val, lastMqttLogState.a0Val);
     if(
       lastMqttReportTime == -1 ||
@@ -368,26 +393,32 @@ void loop() {
       newState.regulator12OutputOn != lastMqttLogState.regulator12OutputOn ||
       tickStartTime - lastMqttReportTime >= minMqttLogInterval
     ) {
-      bool publishedToMqtt = pubSubClient.publish(MQTT_TOPIC, messageBuffer);
+      publishedToMqtt = pubSubClient.publish(MQTT_TOPIC, messageBuffer);
       if( publishedToMqtt ) {
         lastMqttReportTime = tickStartTime;
         lastMqttLogState = newState;
       }
-      Serial.print("a0Val:");
-      Serial.print(newState.a0Val);
-      Serial.print(" ");
-      Serial.print(messageBuffer);
-      Serial.println(publishedToMqtt ? " # Published to MQTT" : " # Failed to publish to MQTT");
-      lastSerialReportTime = tickStartTime;
     }
   } else {
     lastMqttReportTime = -1; // Force publish as soon as next connected
   }
-  if( lastSerialReportTime == -1 || tickStartTime - lastSerialReportTime >= 1000 ) {
+  
+  if(
+    lastSerialReportTime == -1 ||
+    tickStartTime - lastSerialReportTime >= 1000 ||
+    publishedToMqtt ||
+    newState.mqttConnected != prevState.mqttConnected
+  ) {
     Serial.print("a0Val:");
     Serial.print(newState.a0Val);
     Serial.print(" ");
-    Serial.println(messageBuffer);
+    Serial.print(messageBuffer);
+    if( !newState.mqttConnected ) {
+      Serial.print(" # Not connected to MQTT server");
+    } else if( publishedToMqtt ) {
+      Serial.print(" # Published to MQTT");
+    }
+    Serial.println("");
     lastSerialReportTime = tickStartTime;
   }
 
@@ -417,5 +448,7 @@ void loop() {
 nextTick:
   // APPARENTLY WIFI WILL NEVER WORK IF YOU DON'T HAVE A DELAY SOMEWHERE
   delay(100);
+
+  prevState = newState;
 }
 #endif
