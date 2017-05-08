@@ -3,7 +3,7 @@
  * 
  * Watch voltage on a battery, and when it gets too low,
  * power on and connect to a wall power supply
- * (one relay for the supply's 120V input, one for its 12-14V output)
+ * (one relay for the supply's (presumably 120VAC) input power, one for its 12-14V output)
  * 
  * Designed to run on an ESP8266 with one of the popular '4 Relay Modules'
  * available circa 2017 for ~8$ each.
