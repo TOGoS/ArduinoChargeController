@@ -313,18 +313,26 @@ int absDiff(int a, int b) {
 int prevA0Val = 0;
 #endif
 
+unsigned long tickNumber = 0;
+
 void loop() {
   struct LogState newState;
   newState.timestamp = tickStartTime = millis();
   
   // Blink the LED *.*.*... so we can tell it's working
-  switch( ((tickStartTime >> 8) % 8) ) {
-  case 0: case 2: case 4:
-    digitalWrite(LED_BUILTIN, LOW); // Turn the LED on (Note that LOW is the voltage level
-    break;
-  default:
-    digitalWrite(LED_BUILTIN, HIGH);  // Turn the LED off by making the voltage HIGH
-    break;
+  {
+    int blinkNumber = tickNumber >> 2;
+    int newLedState = 0;
+    if( blinkNumber < 64 ) {
+      switch( blinkNumber & 0x1 ) {
+      case 0: newLedState = 1;
+      }
+    } else {
+      switch( blinkNumber & 0x7 ) {
+      case 0: case 2: case 4: newLedState = 1;
+      }
+    }
+    digitalWrite(LED_BUILTIN, newLedState ? LOW : HIGH); // LOW = on
   }
   
   #ifdef SIMULATE_A0VAL
@@ -454,5 +462,6 @@ nextTick:
   delay(100);
 
   prevState = newState;
+  ++tickNumber;
 }
 #endif
