@@ -223,6 +223,7 @@ bool maintainMqttConnection() {
 
 const long minRegulator12OutputMillis = 10*60*1000;
 const long minRegulator12InputMillis  = 11*60*1000;
+const long minMqttLogInterval = 60*1000;
 float maxDischargeRate = 1/60000.0;
 long maxSleepTime = 10*60*1000;
 
@@ -236,7 +237,7 @@ float prevV = -1;
 
 int prevA0Val = -1;
 
-bool regulator12InputOnPreviously = false, regulator12OutputOnPreviously = false;
+bool regulator12InputOn = false, regulator12OutputOn = false;
 
 #ifdef WIFI_DEBUGGING
 void setup() {
@@ -276,8 +277,25 @@ void setup() {
 int tick = 0;
 int consecutiveBoringTicks = 0;
 
+struct LogState {
+  float a0Voltage;
+  bool regulator12InputOn;
+  bool regulator12OutputOn;
+  long timestamp;
+};
+
+struct LogState lastMqttLogState;
+
+void setRelayPinIfChanged(int pin, bool &current, bool requested) {
+  if( current != requested ) {
+    digitalWrite(pin , requested ? LOW : HIGH);
+    current = requested;
+  }
+}
+
 void loop() {
-  tickStartTime = millis();
+  struct LogState newState;
+  newState.timestamp = tickStartTime = millis();
   
   // Blink the LED *.*.*... so we can tell it's working
   switch( ((tickStartTime >> 8) % 8) ) {
@@ -291,41 +309,39 @@ void loop() {
   
   int a0Val = analogRead(A0);
   // Formula designed to match data in voltage-readings.txt
-  float a0Voltage = (a0Val - 3) / 14.5f;
+  newState.a0Voltage = (a0Val - 3) / 14.5f;
   // TODO: Smooth signal when flipping between nearby values
 
-  bool regulator12InputOn, regulator12OutputOn;
-  if( a0Voltage < vMin ) {
-    // Defs need that power!
-    regulator12StartTime = tickStartTime;
-    regulator12InputOn = regulator12OutputOn = true;
-  } else {
-    regulator12InputOn  =                        (regulator12StartTime != -1) && (tickStartTime - regulator12StartTime < minRegulator12InputMillis );
-    regulator12OutputOn = (a0Voltage <= vMax) && (regulator12StartTime != -1) && (tickStartTime - regulator12StartTime < minRegulator12OutputMillis);
+  {
+    bool regulator12InputShouldBeOn, regulator12OutputShouldBeOn;
+    if( newState.a0Voltage < vMin ) {
+      // Defs need that power!
+      regulator12StartTime = tickStartTime;
+      regulator12InputShouldBeOn = regulator12OutputShouldBeOn = true;
+    } else {
+      regulator12InputShouldBeOn  =                                 (regulator12StartTime != -1) && (tickStartTime - regulator12StartTime < minRegulator12InputMillis );
+      regulator12OutputShouldBeOn = (newState.a0Voltage <= vMax) && (regulator12StartTime != -1) && (tickStartTime - regulator12StartTime < minRegulator12OutputMillis);
+    }
+    
+    setRelayPinIfChanged( REGULATOR12_INPUT_RELAY , regulator12InputOn , regulator12InputShouldBeOn  );
+    setRelayPinIfChanged( REGULATOR12_OUTPUT_RELAY, regulator12OutputOn, regulator12OutputShouldBeOn );
   }
-
-  if( regulator12InputOn != regulator12InputOnPreviously ) {
-    digitalWrite(REGULATOR12_INPUT_RELAY , regulator12InputOn  ? LOW : HIGH);
-    regulator12InputOnPreviously = regulator12InputOn;
-  }
-  if( regulator12OutputOn != regulator12OutputOnPreviously ) {
-    digitalWrite(REGULATOR12_OUTPUT_RELAY, regulator12OutputOn ? LOW : HIGH);
-    regulator12OutputOnPreviously = regulator12OutputOn;
-  }
-
+  
   bool mqttConnected = (maintainWiFiConnection() == WL_CONNECTED) && maintainMqttConnection();
 
+  
   message_clear();
+  // Don't put too much in the log mesasge or our MQTT client will reject it!
   //message_appendLabel("a0RawValue");
   //message_appendLong(a0Val);
   message_appendLabel("batteryVoltage");
-  message_appendFloat(a0Voltage);
+  message_appendFloat(newState.a0Voltage);
   message_appendLabel("regPowered");
-  message_appendString(regulator12InputOn?"1":"0");
+  message_appendString(newState.regulator12InputOn?"1":"0");
   message_appendLabel("regConnected");
-  message_appendString(regulator12OutputOn?"1":"0");
+  message_appendString(newState.regulator12OutputOn?"1":"0");
   message_appendLabel("time");
-  message_appendLong(tickStartTime);
+  message_appendLong(newState.timestamp);
   //message_appendLabel("mqttConnected");
   //message_appendString(mqttConnected?"1":"0");
   message_appendLabel("nodeId");
@@ -333,13 +349,20 @@ void loop() {
   message_close();
   
   if( mqttConnected ) {
-    if( lastMqttReportTime == -1 || tickStartTime - lastMqttReportTime >= 1000 ) {
-      if( pubSubClient.publish(MQTT_TOPIC, messageBuffer) ) {
+    if(
+      lastMqttReportTime == -1 ||
+      newState.a0Voltage != lastMqttLogState.a0Voltage ||
+      newState.regulator12InputOn != lastMqttLogState.regulator12InputOn ||
+      newState.regulator12OutputOn != lastMqttLogState.regulator12OutputOn ||
+      tickStartTime - lastMqttReportTime >= minMqttLogInterval
+    ) {
+      bool publishedToMqtt = pubSubClient.publish(MQTT_TOPIC, messageBuffer);
+      if( publishedToMqtt ) {
         lastMqttReportTime = tickStartTime;
-      } else {
-        Serial.println("# Failed to publish message to MQTT server!");
-      }      
-      Serial.println(messageBuffer);
+        lastMqttLogState = newState;
+      }
+      Serial.print(messageBuffer);
+      Serial.println(publishedToMqtt ? " # Published to MQTT" : " # Failed to publish to MQTT");
       lastSerialReportTime = tickStartTime;
     }
   } else {
@@ -358,7 +381,7 @@ void loop() {
   }
 
   if( consecutiveBoringTicks >= 100 ) {
-    long sleepTime = (a0Voltage - vMin)/maxDischargeRate;
+    long sleepTime = (newState.a0Voltage - vMin)/maxDischargeRate;
     if( sleepTime > maxSleepTime ) sleepTime = maxSleepTime;
     if( sleepTime < 30000 ) goto nextTick;
     
