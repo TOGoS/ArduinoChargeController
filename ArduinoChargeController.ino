@@ -275,6 +275,7 @@ int tick = 0;
 int consecutiveBoringTicks = 0;
 
 struct LogState {
+  int a0Val;
   float a0Voltage;
   bool regulator12InputOn;
   bool regulator12OutputOn;
@@ -288,6 +289,16 @@ void setRelayPinIfChanged(int pin, bool &current, bool requested) {
     digitalWrite(pin , requested ? LOW : HIGH);
     current = requested;
   }
+}
+
+int absDiff(int a, int b) {
+  /*Serial.print("absDiff(");
+  Serial.print(a);
+  Serial.print(", ");
+  Serial.print(b);
+  Serial.print(") = ");
+  Serial.println(abs(a - b));*/
+  return abs(a - b);
 }
 
 void loop() {
@@ -304,9 +315,9 @@ void loop() {
     break;
   }
   
-  int a0Val = analogRead(A0);
+  newState.a0Val = analogRead(A0);
   // Formula designed to match data in voltage-readings.txt
-  newState.a0Voltage = (a0Val - 3) / 14.5f;
+  newState.a0Voltage = (newState.a0Val - 3) / 14.5f;
   // TODO: Smooth signal when flipping between nearby values
 
   {
@@ -346,9 +357,13 @@ void loop() {
   message_close();
   
   if( mqttConnected ) {
+    int valDiff = absDiff(newState.a0Val, lastMqttLogState.a0Val);
     if(
       lastMqttReportTime == -1 ||
-      newState.a0Voltage != lastMqttLogState.a0Voltage ||
+      // Attempt to reduce high-frequency, low-amplitude noise in output:
+      // Don't log a difference of only one unit except after waiting a while
+      (valDiff >= 2) ||
+      ((valDiff >= 1) && (tickStartTime - lastMqttReportTime >= 10000)) ||
       newState.regulator12InputOn != lastMqttLogState.regulator12InputOn ||
       newState.regulator12OutputOn != lastMqttLogState.regulator12OutputOn ||
       tickStartTime - lastMqttReportTime >= minMqttLogInterval
@@ -358,6 +373,9 @@ void loop() {
         lastMqttReportTime = tickStartTime;
         lastMqttLogState = newState;
       }
+      Serial.print("a0Val:");
+      Serial.print(newState.a0Val);
+      Serial.print(" ");
       Serial.print(messageBuffer);
       Serial.println(publishedToMqtt ? " # Published to MQTT" : " # Failed to publish to MQTT");
       lastSerialReportTime = tickStartTime;
@@ -366,6 +384,9 @@ void loop() {
     lastMqttReportTime = -1; // Force publish as soon as next connected
   }
   if( lastSerialReportTime == -1 || tickStartTime - lastSerialReportTime >= 1000 ) {
+    Serial.print("a0Val:");
+    Serial.print(newState.a0Val);
+    Serial.print(" ");
     Serial.println(messageBuffer);
     lastSerialReportTime = tickStartTime;
   }
